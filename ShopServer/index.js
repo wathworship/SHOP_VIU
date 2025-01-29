@@ -1,31 +1,25 @@
-require("dotenv").config();
 const express = require("express");
-const mysql = require("mysql2");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const bodyParser = require("body-parser");
+const db = require('./database');
+const cors = require("cors");
 
 const app = express();
 app.use(bodyParser.json());
 
-const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-});
 
-db.connect(err => {
-    if (err) throw err;
-    console.log("Connected to MySQL");
-});
+const JWT_SECRET = "asdasdjlk90"; // ใช้ค่าที่ต้องการได้เลย
+
+// ✅ อนุญาตให้ React (http://localhost:5173) เรียก API ได้
+app.use(cors({ origin: "http://localhost:5173" }));
 
 // Middleware ตรวจสอบ Token
 const verifyToken = (req, res, next) => {
     const token = req.headers["authorization"];
     if (!token) return res.status(403).json({ message: "No token provided" });
 
-    jwt.verify(token.split(" ")[1], process.env.JWT_SECRET, (err, decoded) => {
+    jwt.verify(token.split(" ")[1], JWT_SECRET, (err, decoded) => {
         if (err) return res.status(401).json({ message: "Unauthorized" });
         req.user = decoded;
         next();
@@ -37,7 +31,7 @@ app.post("/register", (req, res) => {
     const { fullName, email, password } = req.body;
     const hashPassword = bcrypt.hashSync(password, 8);
 
-    db.query("INSERT INTO Customer (FullName, Email) VALUES (?, ?)", [fullName, email], (err, result) => {
+    db.query("INSERT INTO Customer (FullName, Email, Password) VALUES (?, ?, ?)", [fullName, email, hashPassword], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: "Customer registered successfully" });
     });
@@ -47,17 +41,32 @@ app.post("/register", (req, res) => {
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
 
-    db.query("SELECT * FROM Customer WHERE Email = ?", [email], (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (results.length === 0) return res.status(401).json({ message: "Invalid email" });
-
-        const user = results[0];
-        if (!bcrypt.compareSync(password, user.password)) {
-            return res.status(401).json({ message: "Invalid password" });
+    db.query("SELECT * FROM Customer WHERE Email = ?", [email], (err, result) => {
+        if (err) {
+            return res.status(500).json({ message: "Database error", error: err });
         }
 
-        const token = jwt.sign({ id: user.CustomerID, email: user.Email }, process.env.JWT_SECRET, { expiresIn: "1h" });
-        res.json({ token });
+        // ตรวจสอบว่าพบผู้ใช้หรือไม่
+        if (result.length === 0) {
+            return res.status(401).json({ message: "Invalid email or password" });
+        }
+
+        const user = result[0];  // ดึงข้อมูลผู้ใช้จากฐานข้อมูล
+        const hashedPassword = user.Password;
+
+        // ตรวจสอบว่ารหัสผ่านถูกต้องหรือไม่
+        if (!hashedPassword || !bcrypt.compareSync(password, hashedPassword)) {
+            return res.status(401).json({ message: "Invalid email or password" });
+        }
+
+        // สร้าง JWT Token
+        const token = jwt.sign(
+            { id: user.CustomerID, email: user.Email }, 
+            JWT_SECRET, 
+            { expiresIn: "2h" } // Token หมดอายุใน 2 ชั่วโมง
+        );
+
+        res.json({ message: "Login successful", token });
     });
 });
 
@@ -144,6 +153,17 @@ app.delete("/orders/:id", verifyToken, (req, res) => {
     });
 });
 
-app.listen(process.env.PORT, () => {
-    console.log(`Server running on port ${process.env.PORT}`);
+// 📌 **10. ดูรายการผู้ใช้งาน (GET /Customer)**
+app.get("/customers", verifyToken, (req, res) => {
+    db.query("SELECT * FROM Customer", (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+// app.listen(process.env.PORT, () => {
+//     console.log(`Server running on port ${process.env.PORT}`);
+// });
+app.listen(3000, () => {
+    console.log(`Server running on port http://localhost:3000`);
 });
